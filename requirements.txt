@@ -1,0 +1,5 @@
+streamlit
+pandas
+elevenlabs
+huggingface-hub
+python-dotenv
