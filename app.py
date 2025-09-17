@@ -2,6 +2,8 @@ import os
 import io
 import uuid
 from datetime import datetime
+from gtts import gTTS
+
 
 import streamlit as st
 import pandas as pd
@@ -11,7 +13,7 @@ from dotenv import load_dotenv
 steps = ["consent", "demographics", "baseline", "session_emp", "session_neu", "open", "review"]
 
 # ElevenLabs
-from elevenlabs.client import ElevenLabs
+
 
 # Hugging Face Hub
 from huggingface_hub import HfApi, hf_hub_download, HfFolder
@@ -20,56 +22,63 @@ from huggingface_hub import HfApi, hf_hub_download, HfFolder
 # Load environment variables
 # -----------------------------
 load_dotenv()
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_DATASET_REPO = os.getenv("HF_DATASET_REPO")        
 HF_DATASET_PATH = os.getenv("HF_DATASET_PATH", "responses.csv")  
 
 # Basic validations
-if not ELEVENLABS_API_KEY:
-    st.error("Missing ELEVENLABS_API_KEY in .env")
+
 if not HF_TOKEN:
     st.error("Missing HF_TOKEN in .env")
 if not HF_DATASET_REPO:
     st.error("Missing HF_DATASET_REPO in .env")
 
 # Init clients
-client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
 hf_api = HfApi()
 HfFolder.save_token(HF_TOKEN)
 
 st.set_page_config(page_title="Empathetic vs. Neutral AI Voice Study", page_icon="🎙", layout="centered")
+
+# ----------------------------------------------------
+# Voice Generation (gTTS)
+# ----------------------------------------------------
+def play_voice(text: str, lang: str = "en"):
+    """Generate & play audio using gTTS."""
+    try:
+        if not text.strip():
+            st.error("⚠ Please enter some text to generate speech.")
+            return
+        tts = gTTS(text=text, lang=lang)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        st.audio(buf, format="audio/mp3")
+    except Exception as e:
+        st.error(f"Voice generation failed: {e}")
 
 
 # ----------------------------------------------------
 # Helpers
 # ----------------------------------------------------
 
-def play_voice(text: str, voice_name: str):
-    """Generate & play audio from ElevenLabs dynamically."""
+def play_voice(text: str, voice_name: str = "default"):
+    """Generate & play audio using gTTS instead of ElevenLabs."""
     try:
-        voices_response = client.voices.get_all()
-        voice_map = {v.name: v for v in voices_response.voices}
-
-        if voice_name not in voice_map:
-            st.error(f"Voice '{voice_name}' not found. Choose one from the dropdown.")
+        if not text.strip():
+            st.warning("Please enter some text to generate voice.")
             return
 
-        # Convert text to speech
-        audio_generator = client.text_to_speech.convert(
-            voice_id=voice_map[voice_name].voice_id,
-            model_id="eleven_flash_v2_5",
-            text=text,
-            output_format="mp3_22050_32"
-        )
+        tts = gTTS(text=text, lang="en")
+        filename = f"voice_{uuid.uuid4().hex}.mp3"
+        tts.save(filename)
 
-        # Collect chunks into one file
-        audio_bytes = b"".join(audio_generator)
-
-        st.audio(io.BytesIO(audio_bytes), format="audio/mpeg")
+        st.audio(filename, format="audio/mp3")
 
     except Exception as e:
         st.error(f"Voice generation failed: {e}")
+
 
 def load_existing_hf_csv(repo_id: str, path_in_repo: str) -> pd.DataFrame:
     try:
@@ -77,11 +86,12 @@ def load_existing_hf_csv(repo_id: str, path_in_repo: str) -> pd.DataFrame:
             repo_id=repo_id,
             repo_type="dataset",
             filename=path_in_repo,
-            token=HF_TOKEN
+            token=HF_TOKEN,
         )
         return pd.read_csv(local_path)
     except Exception:
         return pd.DataFrame(columns=["participant_id"])
+
 
 def upload_csv_to_hf(df: pd.DataFrame, repo_id: str, path_in_repo: str):
     tmp_path = "responses_tmp.csv"
@@ -91,7 +101,7 @@ def upload_csv_to_hf(df: pd.DataFrame, repo_id: str, path_in_repo: str):
         path_in_repo=path_in_repo,
         repo_id=repo_id,
         repo_type="dataset",
-        token=HF_TOKEN
+        token=HF_TOKEN,
     )
 
 def init_state():
@@ -330,28 +340,14 @@ default_voice_metadata = {
 # -----------------------------
 if st.session_state["step"] == "session_emp":
     st.header("Empathetic Voice Session")
-    st.write("""Instructions: For each voice session, please rate the following statements about that voice on a 5-point scale:""")
+    st.write("Instructions: For each voice session, please rate the following statements about that voice on a 5-point scale:")
 
-    # Fetch all ElevenLabs voices
-    voices = client.voices.get_all().voices
+    # Voice selection
+    voice_options = {"English (US Female)": "en", "English (UK Female)": "en-uk", "English (Indian Female)": "en-in",
+                     "French": "fr", "German": "de", "Spanish": "es"}
+    emp_voice_label = st.selectbox("Choose empathetic voice:", list(voice_options.keys()), key="emp_voice_select")
+    emp_voice_lang = voice_options[emp_voice_label]
 
-    # Build labels with fallback to hardcoded metadata
-    voice_labels = {}
-    for v in voices:
-        meta = default_voice_metadata.get(v.name, {})
-        gender = v.labels.get("gender") or meta.get("gender", "Unknown")
-        accent = v.labels.get("accent") or meta.get("accent", "Unknown")
-        desc   = v.labels.get("description") or meta.get("description", "No description available")
-        label  = f"{v.name} — {gender} | {accent} | {desc}"
-        voice_labels[label] = v
-
-    # Select empathetic voice
-    emp_voice_label = st.selectbox(
-        "Choose empathetic voice:",
-        list(voice_labels.keys()),
-        key="emp_voice_select"
-    )
-    emp_voice = voice_labels[emp_voice_label].name
 
     # Text area for empathetic script
     emp_script = st.text_area(
@@ -361,27 +357,26 @@ and it’s completely okay to have moments of stress or worry.
 You’re not alone in feeling this way. Take a slow breath with me… inhale… and exhale. 
 You’re doing your best, and that’s enough. Remember, even small steps forward matter. 
 You deserve kindness, and I’m proud of you for taking this moment for yourself.""",
-        key="emp_script_text"
+        key="emp_script_text_emp" 
     )
 
-    # Play button
+   # Play button
     if st.button("▶ Play Empathetic Voice", key="emp_play_btn"):
-        play_voice(emp_script, emp_voice)
+        play_voice(emp_script, emp_voice_lang)
 
+    # Questions
     st.subheader("AI Voice Interaction Questions (Empathetic Voice)")
-    for i, (key, question) in enumerate(empathetic_questions.items(), start=11):
-        st.radio(f"Q{i}. {question}", five_scale, key=key, horizontal=True)
+    for i, (qkey, question) in enumerate(empathetic_questions.items(), start=11):
+        st.radio(f"Q{i}. {question}", five_scale, key=f"{qkey}_radio", horizontal=True)
 
+    # State anxiety
     st.subheader("During-Interaction Anxiety (State Anxiety)")
-
-    st.write("""Q19.After this empathetic voice session, please indicate how anxious you felt during the session by selecting a number from 1 to 5:""")
-
     st.session_state["emp_state_anxiety"] = st.radio(
-        "",
+        "How anxious did you feel during this session?",
         [1, 2, 3, 4, 5],
+        key="emp_state_anxiety_radio",
         format_func=lambda x: f"{x} = {['Not at all anxious','Slightly anxious','Moderately anxious','Very anxious','Extremely anxious'][x-1]}"
     )
-
 
     navigation_buttons(prev_step="baseline", next_step="session_neu")
 
@@ -389,32 +384,28 @@ You deserve kindness, and I’m proud of you for taking this moment for yourself
 # -----------------------------
 # Neutral Voice Session
 # -----------------------------   
+# -----------------------------
+# Neutral Voice Session
+# -----------------------------   
 if st.session_state["step"] == "session_neu":
     st.header("Neutral / Robotic Voice Session")
-    st.write("""Instructions: For each voice session, please rate the following statements about that voice on a 5-point scale:""")
+    st.write("""Instructions: For each voice session, please rate the following statements on a 5-point scale:""")
 
-    # Fetch all ElevenLabs voices
-    voices = client.voices.get_all().voices
-
-    # Build labels with fallback to hardcoded metadata
-    voice_labels = {}
-    for v in voices:
-        meta = default_voice_metadata.get(v.name, {})
-        gender = v.labels.get("gender") or meta.get("gender", "Unknown")
-        accent = v.labels.get("accent") or meta.get("accent", "Unknown")
-        desc   = v.labels.get("description") or meta.get("description", "No description available")
-        label  = f"{v.name} — {gender} | {accent} | {desc}"
-        voice_labels[label] = v
+    # Static voice options (same as Empathetic session)
+    voice_options = {
+        "English (US Female)": "en",
+        "English (UK Female)": "en-uk",
+        "English (Indian Female)": "en-in",
+        "French": "fr",
+        "German": "de",
+        "Spanish": "es"
+    }
 
     # Select neutral voice
-    neu_voice_label = st.selectbox(
-        "Choose neutral voice:",
-        list(voice_labels.keys()),
-        key="neu_voice_select"
-    )
-    neu_voice = voice_labels[neu_voice_label].name
+    neu_voice_label = st.selectbox("Choose neutral voice:", list(voice_options.keys()), key="neu_voice_select")
+    neu_voice_lang = voice_options[neu_voice_label]
 
-   # Text area for neutral script
+    # Text area for neutral script
     neu_script = st.text_area(
         "Neutral script:",
         """Hello, thank you for participating in this session. 
@@ -428,24 +419,21 @@ Your participation is valuable, and your responses will help us better understan
 
     # Play button
     if st.button("▶ Play Neutral Voice", key="neu_play_btn"):
-        play_voice(neu_script, neu_voice)
+        play_voice(neu_script, neu_voice_lang)
 
     st.subheader("AI Voice Interaction Questions (Neutral Voice)")
     for i, (key, question) in enumerate(neutral_questions.items(), start=20):
-        st.radio(f"Q{i}. {question}", five_scale, key=key, horizontal=True)
+        st.radio(f"Q{i}. {question}", five_scale, key=f"{key}_radio", horizontal=True)
 
     st.subheader("During-Interaction Anxiety (State Anxiety)")
-
-    st.write("""Q28.After this robotic voice session, please indicate how anxious you felt during the session by selecting a number from 1 to 5:""")
-
     st.session_state["neu_state_anxiety"] = st.radio(
-        "",
+        "Q28. How anxious did you feel during this session?",
         [1, 2, 3, 4, 5],
+        key="neu_state_anx_radio",
         format_func=lambda x: f"{x} = {['Not at all anxious','Slightly anxious','Moderately anxious','Very anxious','Extremely anxious'][x-1]}"
     )
 
     navigation_buttons(prev_step="session_emp", next_step="open")
-
 
 
 # -----------------------------
