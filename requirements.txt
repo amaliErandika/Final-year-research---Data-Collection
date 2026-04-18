@@ -1,7 +1,7 @@
 streamlit
 pandas
 elevenlabs
-huggingface-hub
+huggingface_hub==0.20.3
 python-dotenv
 gTTS
 
